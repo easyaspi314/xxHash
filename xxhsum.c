@@ -186,7 +186,7 @@ static size_t XXH_DEFAULT_SAMPLE_SIZE = 100 KB;
 #define MAX_MEM    (2 GB - 64 MB)
 
 static const char stdinName[] = "-";
-typedef enum { algo_xxh32, algo_xxh64, algo_xxh32a, algo_xxh64a, algo_xxh64b } algoType;
+typedef enum { algo_xxh32, algo_xxh64, algo_xxh32a, algo_xxh64a, algo_xxh64b, algo_xxh32b } algoType;
 static const algoType g_defaultAlgo = algo_xxh64;    /* required within main() & usage() */
 
 /* <16 hex char> <SPC> <SPC> <filename> <'\0'>
@@ -270,6 +270,8 @@ static U32 localXXH64(const void* buffer, size_t bufferSize, U32 seed) { return 
 static U32 localXXH64a(const void* buffer, size_t bufferSize, U32 seed) { return (U32)XXH64a(buffer, bufferSize, seed); }
 
 static U32 localXXH64b(const void* buffer, size_t bufferSize, U32 seed) { return (U32)XXH64b(buffer, bufferSize, seed); }
+
+static U32 localXXH32b(const void* buffer, size_t bufferSize, U32 seed) { return XXH32b(buffer, bufferSize, seed); }
 
 static void BMK_benchHash(hashFunction h, const char* hName, const void* buffer, size_t bufferSize)
 {
@@ -359,6 +361,14 @@ static int BMK_benchMem(const void* buffer, size_t bufferSize, U32 specificTest)
     /* Bench XXH64a on Unaligned input */
     if ((specificTest==0) | (specificTest==10))
         BMK_benchHash(localXXH64b, "XXH64b unaligned", ((const char*)buffer)+1, bufferSize);
+
+    /* XXH64a bench */
+    if ((specificTest==0) | (specificTest==11))
+        BMK_benchHash(localXXH32b, "XXH32b", buffer, bufferSize);
+
+    /* Bench XXH64a on Unaligned input */
+    if ((specificTest==0) | (specificTest==12))
+        BMK_benchHash(localXXH32b, "XXH32b unaligned", ((const char*)buffer)+1, bufferSize);
 
     if (specificTest > 4) {
         DISPLAY("benchmark mode invalid \n");
@@ -643,11 +653,13 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
     XXH32_state_t state32;
     XXH64a_state_t state64a;
     XXH64b_state_t state64b;
+    XXH32b_state_t state32b;
     size_t readSize;
 
     /* Init */
     (void)XXH32_reset(&state32, XXHSUM32_DEFAULT_SEED);
     (void)XXH32a_reset(&state32a, XXHSUM32_DEFAULT_SEED);
+    (void)XXH32b_reset(&state32b, XXHSUM32_DEFAULT_SEED);
     (void)XXH64_reset(&state64, XXHSUM64_DEFAULT_SEED);
     (void)XXH64a_reset(&state64a, XXHSUM64_DEFAULT_SEED);
     (void)XXH64b_reset(&state64b, XXHSUM64_DEFAULT_SEED);
@@ -671,7 +683,10 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
             (void)XXH64a_update(&state64a, buffer, readSize);
             break;
         case algo_xxh64b:
-            (void)XXH64a_update(&state64a, buffer, readSize);
+            (void)XXH64b_update(&state64b, buffer, readSize);
+            break;
+        case algo_xxh32b:
+            (void)XXH32b_update(&state32b, buffer, readSize);
             break;
         default:
             break;
@@ -687,6 +702,11 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
         }
     case algo_xxh32a:
         {   U32 const h32 = XXH32a_digest(&state32a);
+            memcpy(xxhHashValue, &h32, sizeof(h32));
+            break;
+        }
+    case algo_xxh32b:
+        {   U32 const h32 = XXH32b_digest(&state32b);
             memcpy(xxhHashValue, &h32, sizeof(h32));
             break;
         }
@@ -772,6 +792,9 @@ static int BMK_hash(const char* fileName,
         case algo_xxh64b:
             BMK_hashStream(&h64, algo_xxh64b, inFile, buffer, blockSize);
             break;
+        case algo_xxh32b:
+            BMK_hashStream(&h32, algo_xxh32b, inFile, buffer, blockSize);
+            break;
         default:
             break;
         }
@@ -798,6 +821,14 @@ static int BMK_hash(const char* fileName,
             displayEndianess==big_endian ?
                 BMK_display_BigEndian(&hcbe32a, sizeof(hcbe32a)) : BMK_display_LittleEndian(&hcbe32a, sizeof(hcbe32a));
             DISPLAYRESULT("-a  %s\n", fileName);
+            break;
+        }
+    case algo_xxh32b:
+        {   XXH32_canonical_t hcbe32b;
+            (void)XXH32_canonicalFromHash(&hcbe32b, h32);
+            displayEndianess==big_endian ?
+                BMK_display_BigEndian(&hcbe32b, sizeof(hcbe32b)) : BMK_display_LittleEndian(&hcbe32b, sizeof(hcbe32b));
+            DISPLAYRESULT("-b  %s\n", fileName);
             break;
         }
     case algo_xxh64:

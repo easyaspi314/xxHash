@@ -340,6 +340,20 @@ XXH_PUBLIC_API void XXH64b_copyState(XXH64b_state_t* dst_state, const XXH64b_sta
 XXH_PUBLIC_API XXH_errorcode XXH64b_reset  (XXH64b_state_t* statePtr, unsigned long long seed);
 XXH_PUBLIC_API XXH_errorcode XXH64b_update (XXH64b_state_t* statePtr, const void* input, size_t length);
 XXH_PUBLIC_API XXH64_hash_t  XXH64b_digest (const XXH64b_state_t* statePtr);
+
+
+XXH_PUBLIC_API XXH32_hash_t XXH32b (const void* input, size_t length, unsigned int seed);
+
+/*======   Streaming   ======*/
+typedef struct XXH32b_state_s XXH32b_state_t;   /* incomplete type */
+XXH_PUBLIC_API XXH32b_state_t* XXH32b_createState(void);
+XXH_PUBLIC_API XXH_errorcode  XXH32b_freeState(XXH32b_state_t* statePtr);
+XXH_PUBLIC_API void XXH32b_copyState(XXH32b_state_t* dst_state, const XXH32b_state_t* src_state);
+
+XXH_PUBLIC_API XXH_errorcode XXH32b_reset  (XXH32b_state_t* statePtr, unsigned int seed);
+XXH_PUBLIC_API XXH_errorcode XXH32b_update (XXH32b_state_t* statePtr, const void* input, size_t length);
+XXH_PUBLIC_API XXH32_hash_t  XXH32b_digest (const XXH32b_state_t* statePtr);
+
 #endif /* !XXH_NO_LONG_LONG */
 #endif /* !XXH_NO_LONG_LONG */
 #endif /* !XXH_NO_ALT_HASHES */
@@ -403,6 +417,19 @@ struct XXH32a_state_s {
    uint32_t reserved;       /*     76 - never read nor write, might be removed in a future version */
 };   /* typedef'd to XXH32a_state_t */
 
+/* The order of this struct is important. Changing these can result in excessive padding,
+ * unaligned reads, or worse. */
+struct XXH32b_state_s {
+   XXH_ALIGN_16             /* Offset */
+   uint32_t v[16];           /*      0 */
+   XXH_ALIGN_16
+   uint32_t mem32[16];       /*     32 */
+   uint32_t total_len_32;   /*     64 */
+   uint32_t large_len;      /*     68 */
+   uint32_t memsize;        /*     72 */
+   uint32_t reserved;       /*     76 - never read nor write, might be removed in a future version */
+};   /* typedef'd to XXH32a_state_t */
+
 struct XXH64_state_s {
    uint64_t total_len;
    uint64_t v1;
@@ -448,6 +475,19 @@ struct XXH32a_state_s {
    unsigned v[8];           /*      0 */
    XXH_ALIGN_16
    unsigned mem32[8];       /*     32 */
+   unsigned total_len_32;   /*     64 */
+   unsigned large_len;      /*     68 */
+   unsigned memsize;        /*     72 */
+   unsigned reserved;       /*     76 - never read nor write, might be removed in a future version */
+};   /* typedef'd to XXH32a_state_t */
+
+/* The order of this struct is important. Changing these can result in excessive padding,
+ * unaligned reads, or worse. */
+struct XXH32b_state_s {
+   XXH_ALIGN_16             /* Offset */
+   unsigned v[16];           /*      0 */
+   XXH_ALIGN_16
+   unsigned mem32[16];       /*     32 */
    unsigned total_len_32;   /*     64 */
    unsigned large_len;      /*     68 */
    unsigned memsize;        /*     72 */
