@@ -314,6 +314,33 @@ XXH_PUBLIC_API void XXH64a_copyState(XXH64a_state_t* dst_state, const XXH64a_sta
 XXH_PUBLIC_API XXH_errorcode XXH64a_reset  (XXH64a_state_t* statePtr, unsigned long long seed);
 XXH_PUBLIC_API XXH_errorcode XXH64a_update (XXH64a_state_t* statePtr, const void* input, size_t length);
 XXH_PUBLIC_API XXH64_hash_t  XXH64a_digest (const XXH64a_state_t* statePtr);
+
+#ifndef XXH_NO_LONG_LONG
+
+/*! XXH64a() :
+    Calculates the 64-bit hash of sequence "length" bytes stored at memory address "input".
+    The memory between input & input+length must be valid (allocated and read-accessible).
+    "seed" can be used to alter the result predictably.
+
+    This uses the same internal loop as XXH32a, so performance will be similar. This means
+    that a 64-bit hash can quickly be calculated on a 32-bit system, however, on a 64-bit
+    system, performance will (usually) be slower than XXH64, but no slower than XXH32a.
+
+    The only difference is how the beginning and ends are handled. It is perfectly safe,
+    but not recommended, to alias XXH32a_state_t and XXH64a_state_t and use the different
+    streaming functions. Most of them call a common function. */
+XXH_PUBLIC_API XXH64_hash_t XXH64b (const void* input, size_t length, unsigned long long seed);
+
+/*======   Streaming   ======*/
+typedef struct XXH64b_state_s XXH64b_state_t;   /* They use the same state type. */
+XXH_PUBLIC_API XXH64b_state_t* XXH64b_createState(void);
+XXH_PUBLIC_API XXH_errorcode  XXH64b_freeState(XXH64b_state_t* statePtr);
+XXH_PUBLIC_API void XXH64b_copyState(XXH64b_state_t* dst_state, const XXH64b_state_t* src_state);
+
+XXH_PUBLIC_API XXH_errorcode XXH64b_reset  (XXH64b_state_t* statePtr, unsigned long long seed);
+XXH_PUBLIC_API XXH_errorcode XXH64b_update (XXH64b_state_t* statePtr, const void* input, size_t length);
+XXH_PUBLIC_API XXH64_hash_t  XXH64b_digest (const XXH64b_state_t* statePtr);
+#endif /* !XXH_NO_LONG_LONG */
 #endif /* !XXH_NO_LONG_LONG */
 #endif /* !XXH_NO_ALT_HASHES */
 
@@ -387,6 +414,19 @@ struct XXH64_state_s {
    uint32_t reserved[2];          /* never read nor write, might be removed in a future version */
 };   /* typedef'd to XXH64_state_t */
 
+/* The order of this struct is important. Changing these can result in excessive padding,
+ * unaligned reads, or worse. */
+struct XXH64b_state_s {
+   XXH_ALIGN_16             /* Offset */
+   uint64_t v[8];           /*      0 */
+   XXH_ALIGN_16
+   uint64_t mem64[8];       /*     32 */
+   uint64_t total_len_64;   /*     64 */
+   uint64_t large_len;      /*     68 */
+   uint64_t memsize;        /*     72 */
+   uint64_t reserved;       /*     76 - never read nor write, might be removed in a future version */
+};   /* typedef'd to XXH32a_state_t */
+
 # else
 
 struct XXH32_state_s {
@@ -425,6 +465,19 @@ struct XXH64_state_s {
    unsigned memsize;
    unsigned reserved[2];     /* never read nor write, might be removed in a future version */
 };   /* typedef'd to XXH64_state_t */
+/* The order of this struct is important. Changing these can result in excessive padding,
+ * unaligned reads, or worse. */
+struct XXH64b_state_s {
+   XXH_ALIGN_16             /* Offset */
+   unsigned long long v[8];           /*      0 */
+   XXH_ALIGN_16
+   unsigned long long mem64[8];       /*     32 */
+   unsigned long long total_len_64;   /*     64 */
+   unsigned long long large_len;      /*     68 */
+   unsigned long long memsize;        /*     72 */
+   unsigned long long reserved;       /*     76 - never read nor write, might be removed in a future version */
+};   /* typedef'd to XXH32a_state_t */
+
 #    endif
 
 # endif

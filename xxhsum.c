@@ -186,7 +186,7 @@ static size_t XXH_DEFAULT_SAMPLE_SIZE = 100 KB;
 #define MAX_MEM    (2 GB - 64 MB)
 
 static const char stdinName[] = "-";
-typedef enum { algo_xxh32, algo_xxh64, algo_xxh32a, algo_xxh64a } algoType;
+typedef enum { algo_xxh32, algo_xxh64, algo_xxh32a, algo_xxh64a, algo_xxh64b } algoType;
 static const algoType g_defaultAlgo = algo_xxh64;    /* required within main() & usage() */
 
 /* <16 hex char> <SPC> <SPC> <filename> <'\0'>
@@ -269,6 +269,8 @@ static U32 localXXH64(const void* buffer, size_t bufferSize, U32 seed) { return 
 
 static U32 localXXH64a(const void* buffer, size_t bufferSize, U32 seed) { return (U32)XXH64a(buffer, bufferSize, seed); }
 
+static U32 localXXH64b(const void* buffer, size_t bufferSize, U32 seed) { return (U32)XXH64b(buffer, bufferSize, seed); }
+
 static void BMK_benchHash(hashFunction h, const char* hName, const void* buffer, size_t bufferSize)
 {
     U32 nbh_perIteration = (U32)((300 MB) / (bufferSize+1)) + 1;  /* first loop conservatively aims for 300 MB/s */
@@ -349,6 +351,14 @@ static int BMK_benchMem(const void* buffer, size_t bufferSize, U32 specificTest)
     /* Bench XXH64a on Unaligned input */
     if ((specificTest==0) | (specificTest==8))
         BMK_benchHash(localXXH64a, "XXH64a unaligned", ((const char*)buffer)+1, bufferSize);
+
+    /* XXH64a bench */
+    if ((specificTest==0) | (specificTest==9))
+        BMK_benchHash(localXXH64b, "XXH64b", buffer, bufferSize);
+
+    /* Bench XXH64a on Unaligned input */
+    if ((specificTest==0) | (specificTest==10))
+        BMK_benchHash(localXXH64b, "XXH64b unaligned", ((const char*)buffer)+1, bufferSize);
 
     if (specificTest > 4) {
         DISPLAY("benchmark mode invalid \n");
@@ -632,6 +642,7 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
     XXH32a_state_t state32a;
     XXH32_state_t state32;
     XXH64a_state_t state64a;
+    XXH64b_state_t state64b;
     size_t readSize;
 
     /* Init */
@@ -639,6 +650,7 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
     (void)XXH32a_reset(&state32a, XXHSUM32_DEFAULT_SEED);
     (void)XXH64_reset(&state64, XXHSUM64_DEFAULT_SEED);
     (void)XXH64a_reset(&state64a, XXHSUM64_DEFAULT_SEED);
+    (void)XXH64b_reset(&state64b, XXHSUM64_DEFAULT_SEED);
 
     /* Load file & update hash */
     readSize = 1;
@@ -656,6 +668,9 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
             (void)XXH64_update(&state64, buffer, readSize);
             break;
         case algo_xxh64a:
+            (void)XXH64a_update(&state64a, buffer, readSize);
+            break;
+        case algo_xxh64b:
             (void)XXH64a_update(&state64a, buffer, readSize);
             break;
         default:
@@ -682,6 +697,11 @@ static void BMK_hashStream(void* xxhHashValue, const algoType hashType, FILE* in
         }
     case algo_xxh64a:
         {   U64 const h64 = XXH64a_digest(&state64a);
+            memcpy(xxhHashValue, &h64, sizeof(h64));
+            break;
+        }
+    case algo_xxh64b:
+        {   U64 const h64 = XXH64b_digest(&state64b);
             memcpy(xxhHashValue, &h64, sizeof(h64));
             break;
         }
@@ -749,6 +769,9 @@ static int BMK_hash(const char* fileName,
         case algo_xxh64a:
             BMK_hashStream(&h64, algo_xxh64a, inFile, buffer, blockSize);
             break;
+        case algo_xxh64b:
+            BMK_hashStream(&h64, algo_xxh64b, inFile, buffer, blockSize);
+            break;
         default:
             break;
         }
@@ -785,12 +808,12 @@ static int BMK_hash(const char* fileName,
             DISPLAYRESULT("  %s\n", fileName);
             break;
         }
-    case algo_xxh64a:
+    case algo_xxh64b:
         {   XXH64_canonical_t hcbe64;
             (void)XXH64_canonicalFromHash(&hcbe64, h64);
             displayEndianess==big_endian ?
                 BMK_display_BigEndian(&hcbe64, sizeof(hcbe64)) : BMK_display_LittleEndian(&hcbe64, sizeof(hcbe64));
-            DISPLAYRESULT("-a  %s\n", fileName);
+            DISPLAYRESULT("-b  %s\n", fileName);
             break;
         }
     default:

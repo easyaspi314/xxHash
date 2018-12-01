@@ -1287,10 +1287,12 @@ XXH32a_XXH64a_endian_align(U32 state[8], const BYTE* p, size_t len,
 
 /* SIMD-optimized code */
 #if XXH_VECTORIZE
-/* x86 slows down significantly on unaligned reads with SSE4.1 instructions.
+/* Old x86 processors slow down significantly on unaligned reads with
+ * SSE4.1 instructions.
+ * Only pre-Sandy Bridge has this issue. Sandy Bridge fixed this issue.
  * On x86, we want to only do SIMD on aligned pointers.
  * NEON prefers unaligned reads, so we always use SIMD. */
-#if/* defined(__x86_64__) &&*/ defined(__SSE4_1__)
+#if (defined(__i386__) || defined(__x86_64__)) && !defined(__AVX__) /* Sandy Bridge */
     if (len >= 32 && endian==XXH_littleEndian && align==XXH_aligned) {
 #else
     if (len >= 32 && endian==XXH_littleEndian) {
@@ -1513,10 +1515,12 @@ XXH32a_XXH64a_update_endian(XXH32a_state_t* state, const void* input, size_t len
 
 /* SIMD-optimized code */
 #if XXH_VECTORIZE
-/* x86_64 slows down significantly on unaligned reads with SSE4.1 instructions.
- * On x86_64, we want to only do SIMD on aligned pointers.
+/* Older x86 processors slow down significantly on unaligned reads with SSE4.1 instructions.
+ * Only pre-Sandy Bridge has this issue. Sandy Bridge fixed this issue and aligned
+ * reads are as fast as normal reads.
+ * On x86, we want to only do SIMD on aligned pointers.
  * NEON and i386 are faster with unaligned reads, so we always use SIMD. */
-#if defined(__x86_64__) && defined(__SSE4_1__)
+#if (defined(__i386__) || defined(__x86_64__)) && !defined(__AVX__) /* Sandy Bridge */
     if (len >= 32 && endian==XXH_littleEndian && ((size_t)p&3)==0) {
 #else
     if (len >= 32 && endian==XXH_littleEndian) {
@@ -1812,6 +1816,446 @@ XXH_PUBLIC_API unsigned long long XXH64a_digest (const XXH64a_state_t* state_in)
         return XXH64a_digest_endian(state_in, XXH_littleEndian);
     else
         return XXH64a_digest_endian(state_in, XXH_bigEndian);
+}
+
+
+typedef U64 U64x4 __attribute__((__vector_size__(32)));
+typedef struct { U64x4 val[2]; } U64x4x2;
+
+/* emmintrin.h's _mm_loadu_si128 code. */
+FORCE_INLINE U64x4 XXH_vec256_load_unaligned(const void* p)
+{
+    struct loader {
+        U64x4 v;
+    } __attribute__((__packed__, __may_alias__));
+    return ((const struct loader*)p)->v;
+}
+
+/* _mm_storeu_si128 */
+FORCE_INLINE void XXH_vec256_store_unaligned(void* p, const U64x4 v)
+{
+    struct loader {
+        U64x4 v;
+     } __attribute__((__packed__, __may_alias__));
+    ((struct loader*)p)->v = v;
+}
+
+/* Clang < 5.0 doesn't support int -> vector conversions.
+ * Yuck. */
+FORCE_INLINE U64x4 XXH_vec_rotl64(U64x4 x, U64 r)
+{
+    const U64x4 left = { r, r, r, r };
+    const U64x4 right = {
+        64 - r,
+        64 - r,
+        64 - r,
+        64 - r
+    };
+    return (x << left) | (x >> right);
+}
+
+#define XXH_vec256_load_aligned(p) *(U64x4*)(p)
+#define XXH_vec256_store_aligned(p, v) (*(U64x4*)(p) = v)
+
+/* *******************************************************************
+*  32-bit hash functions (alternative)
+*********************************************************************/
+
+/* XXH64b and XXH64a share the same inner loop. They just handle
+ * the beginning and end differently.
+ *
+ * The main difference is that XXH64b will duplicate and merge 32-bit
+ * values, while XXH64a will split and join 64-bit values. */
+
+/* Note: Used by both XXH64b and XXH64a. */
+FORCE_INLINE const BYTE* /* p */
+XXH64b_endian_align(U64 state[8], const BYTE* p, size_t len,
+                    XXH_endianess endian, XXH_alignment align)
+{
+    const BYTE* bEnd = p + len;
+
+
+/* SIMD-optimized code */
+#if XXH_VECTORIZE
+/* Old x86 processors slow down significantly on unaligned reads with
+ * SSE4.1 instructions.
+ * Only pre-Sandy Bridge has this issue. Sandy Bridge fixed this issue.
+ * On x86, we want to only do SIMD on aligned pointers.
+ * NEON prefers unaligned reads, so we always use SIMD. */
+#if (defined(__i386__) || defined(__x86_64__)) && !defined(__AVX__) /* Sandy Bridge */
+    if (len >= 64 && endian==XXH_littleEndian && align==XXH_aligned) {
+#else
+    if (len >= 64 && endian==XXH_littleEndian) {
+#endif
+        U64x4 v[2] = {
+            XXH_vec256_load_unaligned(&state[0]),
+            XXH_vec256_load_unaligned(&state[4])
+        };
+        const U64x4 prime1 = { PRIME64_1, PRIME64_1, PRIME64_1, PRIME64_1 };
+        const U64x4 prime2 = { PRIME64_2, PRIME64_2, PRIME64_2, PRIME64_2 };
+        const BYTE* const limit = bEnd - 63;
+        /* https://moinakg.wordpress.com/2013/01/19/vectorizing-xxhash-for-fun-and-profit/
+         * shows that performing two parallel hashes at a time is much better for
+         * performance. It produces a different hash, though. */
+
+        /* Aligned reads are faster. We want a 16-byte align. */
+        if (((size_t)p&31) == 0) {
+            do {
+                const U64x4 *inp = (const U64x4*)XXH_assume_aligned(p, 32);
+
+                /* XXH64_round */
+                v[0] += prime2 * inp[0];
+                v[0]  = XXH_vec_rotl64(v[0], 31);
+                v[0] *= prime1;
+
+                v[1] += prime2 * inp[1];
+                v[1]  = XXH_vec_rotl64(v[1], 31);
+                v[1] *= prime1;
+                p += 64;
+            } while (p < limit);
+        } else {
+            do {
+                /* Load 32 bytes at a time. */
+                const U64x4 inp[2] = {
+                    XXH_vec256_load_unaligned(p),
+                    XXH_vec256_load_unaligned((p + 32)),
+                };
+                /* XXH64_round */
+                v[0] += inp[0] * prime2;
+                v[0]  = XXH_vec_rotl64(v[0], 31);
+                v[0] *= prime1;
+
+                v[1] += inp[1] * prime2;
+                v[1]  = XXH_vec_rotl64(v[1], 31);
+                v[1] *= prime1;
+
+                p += 64;
+            } while (p < limit);
+        }
+        XXH_vec256_store_unaligned(&state[0], v[0]);
+        XXH_vec256_store_unaligned(&state[4], v[1]);
+
+    } else
+#endif /* XXH_VECTORIZE */
+    /* no vectorizing or wrong endian */
+    if (len >= 64) {
+        XXH_ALIGN_16
+        U64 v[8];
+        const BYTE* const limit = bEnd - 64;
+
+        XXH_memcpy(v, state, sizeof(v));
+
+#if !XXH_VECTORIZE2 /* would never happen because it would be caught above */
+        if (align==XXH_aligned && endian==XXH_littleEndian) {
+            do {
+                const U64* const inp = (const U64*)XXH_assume_aligned(p, 8);
+                /* NO SSE */
+                v[0] = XXH64_round(v[0], inp[0]);
+                v[1] = XXH64_round(v[1], inp[1]);
+                v[2] = XXH64_round(v[2], inp[2]);
+                v[3] = XXH64_round(v[3], inp[3]);
+                v[4] = XXH64_round(v[4], inp[4]);
+                v[5] = XXH64_round(v[5], inp[5]);
+                v[6] = XXH64_round(v[6], inp[6]);
+                v[7] = XXH64_round(v[7], inp[7]);
+                p += 64;
+            } while (p < limit);
+        } else
+#endif
+            do {
+                /* NO SSE */
+                v[0] = XXH64_round(v[0], XXH_get64bits(p)); p+=4;
+                v[1] = XXH64_round(v[1], XXH_get64bits(p)); p+=4;
+                v[2] = XXH64_round(v[2], XXH_get64bits(p)); p+=4;
+                v[3] = XXH64_round(v[3], XXH_get64bits(p)); p+=4;
+                v[4] = XXH64_round(v[4], XXH_get64bits(p)); p+=4;
+                v[5] = XXH64_round(v[5], XXH_get64bits(p)); p+=4;
+                v[6] = XXH64_round(v[6], XXH_get64bits(p)); p+=4;
+                v[7] = XXH64_round(v[7], XXH_get64bits(p)); p+=4;
+            } while (p < limit);
+
+       XXH_memcpy(state, v, 8 * sizeof(U64));
+    }
+
+    return p;
+}
+
+
+XXH_PUBLIC_API unsigned long long XXH64b (const void* input, size_t len, unsigned long long seed)
+{
+#if 0
+    /* Simple version, good for code maintenance, but unfortunately slow for small inputs */
+    XXH64b_state_t state;
+    XXH64b_reset(&state, seed);
+    XXH64b_update(&state, input, len);
+    return XXH64b_digest(&state);
+#else
+    U64 h64;
+    const BYTE* p = (const BYTE*)input;
+    XXH_endianess endian = ((XXH_endianess)XXH_CPU_LITTLE_ENDIAN==XXH_littleEndian
+                                    || XXH_FORCE_NATIVE_FORMAT) ? XXH_littleEndian
+                                                                : XXH_bigEndian;
+    XXH_alignment align = ((((size_t)input) & 7) == 0) ? XXH_aligned : XXH_unaligned;
+
+#if defined(XXH_ACCEPT_NULL_INPUT_POINTER) && (XXH_ACCEPT_NULL_INPUT_POINTER>=1)
+    if (p==NULL) {
+        len=0;
+        p=(const BYTE*)64;
+    }
+#endif
+
+
+    if (len >= 64) {
+        U64 v[8];
+        v[0] = v[4] = seed + PRIME64_1 + PRIME64_2;
+        v[1] = v[5] = seed + PRIME64_2;
+        v[2] = v[6] = seed + 0;
+        v[3] = v[7] = seed - PRIME64_1;
+
+        p = XXH64b_endian_align(v, p, len, endian, align);
+
+        v[0] = XXH64_round(v[0], v[4]);
+        v[1] = XXH64_round(v[1], v[5]);
+        v[2] = XXH64_round(v[2], v[6]);
+        v[3] = XXH64_round(v[3], v[7]);
+
+        h64 = XXH_rotl64(v[0], 1)  + XXH_rotl64(v[1], 7)
+            + XXH_rotl64(v[2], 12) + XXH_rotl64(v[3], 18);
+    } else {
+        h64  = seed + PRIME64_5;
+    }
+
+    h64 += (U64)len;
+    return XXH64_finalize(h64, p, len&31, endian, align);
+#endif
+}
+
+
+
+/*======   Hash streaming   ======*/
+
+XXH_PUBLIC_API XXH64b_state_t* XXH64b_createState(void)
+{
+    return (XXH64b_state_t*)XXH_malloc(sizeof(XXH64b_state_t));
+}
+XXH_PUBLIC_API XXH_errorcode XXH64b_freeState(XXH64b_state_t* statePtr)
+{
+    XXH_free(statePtr);
+    return XXH_OK;
+}
+
+XXH_PUBLIC_API void XXH64b_copyState(XXH64b_state_t* dstState, const XXH64b_state_t* srcState)
+{
+    memcpy(dstState, srcState, sizeof(*dstState));
+}
+
+XXH_PUBLIC_API XXH_errorcode XXH64b_reset(XXH64b_state_t* statePtr, unsigned long long seed)
+{
+    XXH64b_state_t state;   /* using a local state to memcpy() in order to avoid strict-aliasing warnings */
+    memset(&state, 0, sizeof(state));
+    state.v[0] = state.v[4] = seed + PRIME64_1 + PRIME64_2;
+    state.v[1] = state.v[5] = seed + PRIME64_2;
+    state.v[2] = state.v[6] = seed + 0;
+    state.v[3] = state.v[7] = seed - PRIME64_1;
+    /* do not write into reserved, planned to be removed in a future version */
+    memcpy(statePtr, &state, sizeof(state) - sizeof(state.reserved));
+    return XXH_OK;
+}
+
+/* Again, this code is reused for both XXH64b and XXH64a */
+FORCE_INLINE XXH_errorcode
+XXH64b_update_endian(XXH64b_state_t* state, const void* input, size_t len, XXH_endianess endian)
+{
+    if (input==NULL)
+#if defined(XXH_ACCEPT_NULL_INPUT_POINTER) && (XXH_ACCEPT_NULL_INPUT_POINTER>=1)
+        return XXH_OK;
+#else
+        return XXH_ERROR;
+#endif
+
+    {   const BYTE* p = (const BYTE*)input;
+        const BYTE* const bEnd = p + len;
+
+        state->total_len_64 += (unsigned)len;
+        state->large_len |= (len>=64) | (state->total_len_64>=64);
+
+        if (state->memsize + len < 64)  {   /* fill in tmp buffer */
+            XXH_memcpy((BYTE*)(state->mem64) + state->memsize, input, len);
+            state->memsize += (unsigned)len;
+            return XXH_OK;
+        }
+
+        if (state->memsize) {   /* some data left from previous update */
+            XXH_memcpy((BYTE*)(state->mem64) + state->memsize, input, 64-state->memsize);
+            /* Only one round, not worth it to vectorize. */
+            {   const U64* p64 = state->mem64;
+                state->v[0] = XXH64_round(state->v[0], XXH_readLE64(p64, endian)); p64++;
+                state->v[1] = XXH64_round(state->v[1], XXH_readLE64(p64, endian)); p64++;
+                state->v[2] = XXH64_round(state->v[2], XXH_readLE64(p64, endian)); p64++;
+                state->v[3] = XXH64_round(state->v[3], XXH_readLE64(p64, endian)); p64++;
+                state->v[4] = XXH64_round(state->v[4], XXH_readLE64(p64, endian)); p64++;
+                state->v[5] = XXH64_round(state->v[5], XXH_readLE64(p64, endian)); p64++;
+                state->v[6] = XXH64_round(state->v[6], XXH_readLE64(p64, endian)); p64++;
+                state->v[7] = XXH64_round(state->v[7], XXH_readLE64(p64, endian));
+            }
+            p += 64-state->memsize;
+            state->memsize = 0;
+        }
+
+
+/* SIMD-optimized code */
+#if XXH_VECTORIZE
+/* Older x86 processors slow down significantly on unaligned reads with SSE4.1 instructions.
+ * Only pre-Sandy Bridge has this issue. Sandy Bridge fixed this issue and aligned
+ * reads are as fast as normal reads.
+ * On x86, we want to only do SIMD on aligned pointers.
+ * NEON and i386 are faster with unaligned reads, so we always use SIMD. */
+#if (defined(__i386__) || defined(__x86_64__)) && !defined(__AVX__) /* Sandy Bridge */
+    if (len >= 64 && endian==XXH_littleEndian && ((size_t)p&7)==0) {
+#else
+    if (len >= 64 && endian==XXH_littleEndian) {
+#endif
+            const BYTE* const limit = bEnd - 63;
+            U64x4x2 v;
+
+            const U64x4 prime1 = { PRIME64_1, PRIME64_1, PRIME64_1, PRIME64_1 };
+            const U64x4 prime2 = { PRIME64_2, PRIME64_2, PRIME64_2, PRIME64_2 };
+            XXH_memcpy(&v, state->v, sizeof(v));
+
+            /* https://moinakg.wordpress.com/2013/01/19/vectorizing-xxhash-for-fun-and-profit/
+             * shows that performing two parallel hashes at a time is much better for
+             * performance. It produces a different hash, though. */
+
+            /* Aligned reads are faster. We want a 16-byte align. */
+
+           if (((size_t)p&31) == 0) {
+                do {
+                    const U64x4* inp = (const U64x4*)__builtin_assume_aligned(p, 64);
+
+                    /* XXH64_round */
+                    v.val[0] += inp[0] * prime2;
+                    v.val[1] += inp[1] * prime2;
+
+                    v.val[0]  = XXH_vec_rotl64(v.val[0], 31);
+                    v.val[1]  = XXH_vec_rotl64(v.val[1], 31);
+
+                    v.val[0] *= prime1;
+                    v.val[1] *= prime1;
+                    p += 64;
+                } while (p <= limit);
+            } else {
+                do {
+                    /* Load 64 bytes at a time. */
+                    const U64x4 inp[2] = {
+                        XXH_vec256_load_unaligned(p),
+                        XXH_vec256_load_unaligned(p + 32),
+                    };
+                    /* XXH64_round */
+                    v.val[0] += inp[0] * prime2;
+                    v.val[1] += inp[1] * prime2;
+
+                    v.val[0]  = XXH_vec_rotl64(v.val[0], 31);
+                    v.val[1]  = XXH_vec_rotl64(v.val[1], 31);
+
+                    v.val[0] *= prime1;
+                    v.val[1] *= prime1;
+                    p += 64;
+
+                } while (p <= limit);
+            }
+            XXH_memcpy(state->v, &v, sizeof(v));
+        } else
+#endif /* XXH_VECTORIZE */
+        if (len >= 64) {
+            U64 v[8];
+            const BYTE* const limit = bEnd - 63;
+
+            XXH_memcpy(v, state->v, sizeof(v));
+#if !XXH_VECTORIZE
+            if (((size_t)p&7)==0 && endian==XXH_littleEndian) {
+                do {
+                    const U64* const inp = (const U64*)XXH_assume_aligned(p, 8);
+
+                    v[0] = XXH64_round(v[0], inp[0]);
+                    v[1] = XXH64_round(v[1], inp[1]);
+                    v[2] = XXH64_round(v[2], inp[2]);
+                    v[3] = XXH64_round(v[3], inp[3]);
+
+                    v[4] = XXH64_round(v[4], inp[4]);
+                    v[5] = XXH64_round(v[5], inp[5]);
+                    v[6] = XXH64_round(v[6], inp[6]);
+                    v[7] = XXH64_round(v[7], inp[7]);
+                    p += 64;
+                } while (p <= limit);
+            } else
+#endif
+                do {
+                    v[0] = XXH64_round(v[0], XXH_readLE64(p, endian)); p+=8;
+                    v[1] = XXH64_round(v[1], XXH_readLE64(p, endian)); p+=8;
+                    v[2] = XXH64_round(v[2], XXH_readLE64(p, endian)); p+=8;
+                    v[3] = XXH64_round(v[3], XXH_readLE64(p, endian)); p+=8;
+
+                    v[4] = XXH64_round(v[4], XXH_readLE64(p, endian)); p+=8;
+                    v[5] = XXH64_round(v[5], XXH_readLE64(p, endian)); p+=8;
+                    v[6] = XXH64_round(v[6], XXH_readLE64(p, endian)); p+=8;
+                    v[7] = XXH64_round(v[7], XXH_readLE64(p, endian)); p+=8;
+                } while (p <= limit);
+
+            XXH_memcpy(state->v, v, sizeof(v));
+        }
+
+        if (p < bEnd) {
+            XXH_memcpy(state->mem64, p, (size_t)(bEnd-p));
+            state->memsize = (unsigned)(bEnd-p);
+        }
+    }
+
+    return XXH_OK;
+}
+
+
+XXH_PUBLIC_API XXH_errorcode XXH64b_update (XXH64b_state_t* state_in, const void* input, size_t len)
+{
+    XXH_endianess endian_detected = (XXH_endianess)XXH_CPU_LITTLE_ENDIAN;
+
+    if ((endian_detected==XXH_littleEndian) || XXH_FORCE_NATIVE_FORMAT)
+        return XXH64b_update_endian(state_in, input, len, XXH_littleEndian);
+    else
+        return XXH64b_update_endian(state_in, input, len, XXH_bigEndian);
+}
+
+
+FORCE_INLINE U64
+XXH64b_digest_endian (const XXH64b_state_t* state, XXH_endianess endian)
+{
+    U64 h64;
+
+    if (state->large_len) {
+        U64 v1 = XXH64_round(state->v[0], state->v[4]);
+        U64 v2 = XXH64_round(state->v[1], state->v[5]);
+        U64 v3 = XXH64_round(state->v[2], state->v[6]);
+        U64 v4 = XXH64_round(state->v[3], state->v[7]);
+        h64 = XXH_rotl64(v1, 1)  + XXH_rotl64(v2, 7)
+            + XXH_rotl64(v3, 12) + XXH_rotl64(v4, 18);
+    } else {
+        h64 = state->v[2] /* == seed */ + PRIME64_5;
+
+    }
+
+    h64 += state->total_len_64;
+
+    return  XXH64_finalize(h64, state->mem64, state->memsize, endian, XXH_aligned);
+}
+
+
+XXH_PUBLIC_API unsigned long long XXH64b_digest (const XXH64b_state_t* state_in)
+{
+    XXH_endianess endian_detected = (XXH_endianess)XXH_CPU_LITTLE_ENDIAN;
+
+    if ((endian_detected==XXH_littleEndian) || XXH_FORCE_NATIVE_FORMAT)
+        return XXH64b_digest_endian(state_in, XXH_littleEndian);
+    else
+        return XXH64b_digest_endian(state_in, XXH_bigEndian);
 }
 
 #endif  /* XXH_NO_LONG_LONG */
