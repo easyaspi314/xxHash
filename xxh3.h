@@ -341,48 +341,17 @@ XXH3_accumulate_512(void* acc, const void *restrict data, const void *restrict k
 
         size_t i;
         for (i=0; i < STRIPE_LEN / sizeof(uint64x2_t); i++) {
-#if !defined(__aarch64__) && !defined(__arm64__) && !defined(XXH_NO_ARM32_HACK)
-            /* On 32-bit ARM, we can take advantage of the packed registers.
-             * This is not portable to aarch64!
-             * Basically, on 32-bit NEON, registers are stored like so:
-             *  .----------------------------------.
-             *  |                q8                | // uint32x4_t
-             *  |-----------------.----------------|
-             *  |  d16 (.val[0])  |  d17 (.val[1]) | // uint32x2x2_t
-             *  '-----------------'----------------'
-             * vld2.32 will store its values into two double registers, returning
-             * a uint32x2_t. In NEON, this will be stored in, for example, d16 and d17.
-             * Reinterpret cast it to a uint32x4_t and you get q8 for free
-             *
-             * On aarch64, this was changed completely.
-             *
-             * aarch64 gave us 16 more quad registers, but they also removed this behavior,
-             * instead matching smaller registers to the lower sections of the higher
-             * registers and zeroing the rest.
-             *  .----------------------------------..---------------------------------.
-             *  |               v8.4s              |               v9.4s               |
-             *  |-----------------.----------------|-----------------.-----------------|
-             *  | v8.2s (.val[0]) |     <zero>     | v9.2s (.val[1]) |      <zero>     |
-             *  '-----------------'----------------'-----------------'-----------------'
-             * On aarch64, ld2 will put it into v8.2s and v9.2s. Reinterpreting
-             * is not going to help us here, as half of it will end up being zero. */
-
-            uint32x2x2_t d = vld2_u32(xdata + i * 4);     /* load and swap */
-            uint32x2x2_t k = vld2_u32(xkey + i * 4);
-            /* Not sorry about breaking the strict aliasing rule.
-             * Using a union causes GCC to spit out nonsense, but an alias cast
-             * does not. */
-            uint32x4_t const dk = vaddq_u32(*(uint32x4_t*)&d, *(uint32x4_t*)&k);
-            xacc[i] = vmlal_u32(xacc[i], vget_low_u32(dk), vget_high_u32(dk));
+            uint32x4_t const d = vld1q_u32(xdata + i * 4);
+            uint32x4_t const k = vld1q_u32(xkey + i * 4);
+            xacc[i] = vaddq_u64(xacc[i], vreinterpretq_u64_u32(d));
+            { uint32x4_t dk = vaddq_u32(d, k);
+#ifdef ALT // which is faster?
+              uint32x2x2_t dkSwapped = vzip_u32(vget_low_u32(dk), vget_high_u32(dk));
+              xacc[i] = vmlal_u32(xacc[i], dkSwapped.val[0], dkSwapped.val[1]);
 #else
-            /* Portable, but slightly slower version */
-            uint32x2x2_t const d = vld2_u32(xdata + i * 4);
-            uint32x2x2_t const k = vld2_u32(xkey + i * 4);
-            uint32x2_t const dkL = vadd_u32(d.val[0], k.val[0]);
-            uint32x2_t const dkH = vadd_u32(d.val[1], k.val[1]);   /* uint32 dk[4]  = {d0+k0, d1+k1, d2+k2, d3+k3} */
-            /* xacc must be aligned on 16 bytes boundaries */
-            xacc[i] = vmlal_u32(xacc[i], dkL, dkH);                /* uint64 res[2] = {dk0*dk1,dk2*dk3} */
+              xacc[i] = vmlal_u32(xacc[i], vshrn_n_u64(vreinterpretq_u64_u32(dk), 32), vmovn_u64(vreinterpretq_u64_u32(dk)));
 #endif
+            }
         }
     }
 #else   /* scalar variant */
