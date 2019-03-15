@@ -223,6 +223,17 @@ static unsigned BMK_isLittleEndian(void)
 #  else
 #    define ARCH "arm"
 #  endif
+#elif defined(__wasm64) || defined(__wasm64__)
+#  define ARCH "wasm64"
+#elif defined(__wasm32) || defined(__wasm32__) || defined(__wasm__)
+#  define ARCH "wasm32"
+#elif defined(__asmjs) || defined(__asmjs__)
+/* XXX: Is there a way to detect wasm vs asm.js with emcc? emcc doesn't emit a __wasm__ macro. */
+#  if defined(__EMSCRIPTEN__)
+#    define ARCH "asm.js or wasm"
+#  else
+#    define ARCH "asm.js"
+#  endif
 #elif defined(__powerpc64__) || defined(__ppc64__) || defined(__PPC64__)
 #  define ARCH "ppc64"
 #elif defined(__powerpc__) || defined(__ppc__) || defined(__PPC__)
