@@ -3,7 +3,7 @@ xxHash fast digest algorithm
 
 ### Notices
 
-Copyright (c) Yann Collet
+Copyright (c) 2012-2014, Yann Collet
 
 Permission is granted to copy and distribute this document
 for any purpose and without charge,
